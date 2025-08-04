@@ -47,6 +47,16 @@ public interface QuoteRepository extends JpaRepository<Quote, Long> {
     // 미용사가 보낸 견적서 상세 조회
     Quote findByRequestIdAndGroomerId(QuoteRequest requestId, Groomer groomerId);
 
+    // 결제 승인 로직에 필요한 정보
+    @Query("SELECT q FROM Quote q " +
+            "JOIN FETCH q.groomerId g " +
+            "JOIN FETCH g.userId gu " +
+            "JOIN FETCH q.dogId d " +
+            "JOIN FETCH d.customerId c " +
+            "JOIN FETCH c.userId cu " +
+            "WHERE q.quoteId = :quoteId")
+    Optional<Quote> findQuoteForPaymentById(@Param("quoteId") Long quoteId);
+
     @Query("SELECT q FROM Quote q WHERE q.dogId.customerId.customerId = :customerId AND q.isDeleted = false")
     List<Quote> findAllByCustomerDogs(@Param("customerId") Long customerId);
 

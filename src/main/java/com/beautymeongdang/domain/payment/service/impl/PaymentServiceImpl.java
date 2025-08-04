@@ -91,11 +91,13 @@ public class PaymentServiceImpl implements PaymentService {
     public PaymentResponseDto confirmPayment(PaymentRequestDto request) {
 
         try {
-            Quote quote = quoteRepository.findById(request.getQuoteId())
+            Quote quote = quoteRepository.findQuoteForPaymentById(request.getQuoteId())
                     .orElseThrow(() -> NotFoundException.entityNotFound("견적 데이터"));
 
-            Customer customer = customerRepository.findById(request.getCustomerId())
-                    .orElseThrow(() -> NotFoundException.entityNotFound("고객 데이터"));
+            Customer customer = quote.getDogId().getCustomerId();
+            if (customer == null || !customer.getCustomerId().equals(request.getCustomerId())) {
+                throw NotFoundException.entityNotFound("고객 데이터");
+            }
 
             if (selectedQuoteRepository.findByQuoteId(quote) != null) {
                 throw BadRequestException.invalidRequest("해당 견적서는 이미 예약되었습니다.");

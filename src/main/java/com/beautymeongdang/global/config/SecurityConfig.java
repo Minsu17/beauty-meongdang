@@ -46,7 +46,13 @@ public class SecurityConfig {
                 // 기본 로그인 방식 비활성화
                 .formLogin((auth) -> auth.disable())
                 .httpBasic((auth) -> auth.disable())
-                .oauth2Login((auth) -> auth.disable()) // 커스텀 방식(프론트 인가 코드)을 사용하기 떄문에 사용 X
+//                .oauth2Login((auth) -> auth.disable()) // 커스텀 방식(프론트 인가 코드)을 사용하기 떄문에 사용 X
+                .oauth2Login(oauth2 -> oauth2           // 자동인증 방식 백앤드 로컬 테스트용
+                        .userInfoEndpoint(userInfo -> userInfo
+                                .userService(customOAuth2UserService))
+                        .successHandler(customSuccessHandler)
+                        .authorizationEndpoint(authorization -> authorization
+                                .baseUri("/oauth2/authorization")))
 
                 // 로그아웃 설정
                 .logout(logout -> logout
@@ -63,7 +69,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/users/register/**").authenticated()  // JWT 헤더에 인증이 필요함
                         // 인증이 필요없는 public 접근 경로
                         .requestMatchers(
-                                "/gpt/**",
+                                "/**",
                                 "/api/users/register/**",
                                 "/login/oauth2/code/**",
                                 "/selectRole.html",
@@ -72,16 +78,14 @@ public class SecurityConfig {
                                 "/login.jsx",
                                 "/index.html",
                                 "/index1.html",
-                                "/templates/email.html",
                                 "/login/**",
                                 "/api/auth/**",
+                                "/oauth2/**",
                                 // 프론트엔드 라우트들
                                 "/",                    // 루트 경로
                                 "/selectRole",         // 역할 선택 페이지
                                 "/login",             // 로그인 페이지
-                                "/oauth2/**",          // OAuth2 관련 모든 경로
-                                "/ws/**",
-                                "/chats/**"
+                                "/oauth2/**"          // OAuth2 관련 모든 경로
                         ).permitAll()
                         // API 및 Swagger 관련 경로
                         .requestMatchers(
