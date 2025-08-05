@@ -195,37 +195,10 @@ public class PaymentServiceImpl implements PaymentService {
             String formattedBeautyDate = quote.getBeautyDate().format(formatter);
 
             // 알림 메시지 생성
-            String notificationMessageForCustomer = String.format(
-                    "예약이 완료되었습니다. 미용사: %s, 강아지: %s, 비용: %d원, 미용 날짜: %s",
-                    quote.getGroomerId().getUserId().getNickname(),
-                    quote.getDogId().getDogName(),
-                    request.getAmount(),
-                    formattedBeautyDate
-            );
+            CreateReserveNotification reserve = CreateReserveNotification(request, quote, formattedBeautyDate, customer);
 
-            String notificationMessageForGroomer = String.format(
-                    "예약이 완료되었습니다. 고객: %s, 강아지: %s, 비용: %d원, 미용 날짜: %s",
-                    customer.getUserId().getUserName(),
-                    quote.getDogId().getDogName(),
-                    request.getAmount(),
-                    formattedBeautyDate
-            );
-
-            // 고객 알림 저장 (예약 알림)
-            notificationService.saveNotification(
-                    customer.getUserId().getUserId(),
-                    "customer",
-                    NotificationType.RESERVATION.getDescription(),
-                    notificationMessageForCustomer
-            );
-
-            // 미용사 알림 저장 (예약 알림)
-            notificationService.saveNotification(
-                    quote.getGroomerId().getUserId().getUserId(),
-                    "groomer",
-                    NotificationType.RESERVATION.getDescription(),
-                    notificationMessageForGroomer
-            );
+            //알림 메시지 저장
+            saveNotification(customer, NotificationType.RESERVATION, reserve.notificationMessageForCustomer(), quote, reserve.notificationMessageForGroomer());
 
             String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
                     .map(CommonCode::getCommonName)
@@ -247,6 +220,47 @@ public class PaymentServiceImpl implements PaymentService {
             log.error("결제 승인 중 오류 발생: {}", e.getMessage(), e);
             throw InternalServerException.error("결제 승인 중 오류가 발생했습니다: " + e.getMessage());
         }
+    }
+
+    private void saveNotification(Customer customer, NotificationType reservation, String reserve, Quote quote, String reserve1) {
+        // 고객 알림 저장 (예약 알림)
+        notificationService.saveNotification(
+                customer.getUserId().getUserId(),
+                "customer",
+                reservation.getDescription(),
+                reserve
+        );
+
+        // 미용사 알림 저장 (예약 알림)
+        notificationService.saveNotification(
+                quote.getGroomerId().getUserId().getUserId(),
+                "groomer",
+                reservation.getDescription(),
+                reserve1
+        );
+    }
+
+    private static CreateReserveNotification CreateReserveNotification(PaymentRequestDto request, Quote quote, String formattedBeautyDate, Customer customer) {
+        String notificationMessageForCustomer = String.format(
+                "예약이 완료되었습니다. 미용사: %s, 강아지: %s, 비용: %d원, 미용 날짜: %s",
+                quote.getGroomerId().getUserId().getNickname(),
+                quote.getDogId().getDogName(),
+                request.getAmount(),
+                formattedBeautyDate
+        );
+
+        String notificationMessageForGroomer = String.format(
+                "예약이 완료되었습니다. 고객: %s, 강아지: %s, 비용: %d원, 미용 날짜: %s",
+                customer.getUserId().getUserName(),
+                quote.getDogId().getDogName(),
+                request.getAmount(),
+                formattedBeautyDate
+        );
+        CreateReserveNotification reserve = new CreateReserveNotification(notificationMessageForCustomer, notificationMessageForGroomer);
+        return reserve;
+    }
+
+    private record CreateReserveNotification(String notificationMessageForCustomer, String notificationMessageForGroomer) {
     }
 
     @Recover
@@ -325,20 +339,7 @@ public class PaymentServiceImpl implements PaymentService {
                 );
 
                 // 고객 알림 저장 (예약 취소 알림)
-                notificationService.saveNotification(
-                        selectedQuote.getCustomerId().getUserId().getUserId(),
-                        "customer",
-                        NotificationType.CANCELLATION.getDescription(),
-                        notificationMessageForCustomer
-                );
-
-                // 미용사 알림 저장 (예약 취소 알림)
-                notificationService.saveNotification(
-                        selectedQuote.getQuoteId().getGroomerId().getUserId().getUserId(),
-                        "groomer",
-                        NotificationType.CANCELLATION.getDescription(),
-                        notificationMessageForGroomer
-                );
+                saveNotification(selectedQuote.getCustomerId(), NotificationType.CANCELLATION, notificationMessageForCustomer, selectedQuote.getQuoteId(), notificationMessageForGroomer);
 
                 String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
                         .map(CommonCode::getCommonName)
