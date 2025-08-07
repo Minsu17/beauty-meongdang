@@ -17,7 +17,6 @@ import com.beautymeongdang.domain.quote.repository.QuoteRequestRepository;
 import com.beautymeongdang.domain.quote.repository.SelectedQuoteRepository;
 import com.beautymeongdang.domain.shop.repository.ShopRepository;
 import com.beautymeongdang.domain.user.entity.Customer;
-import com.beautymeongdang.domain.user.repository.CustomerRepository;
 import com.beautymeongdang.global.common.entity.CommonCode;
 import com.beautymeongdang.global.common.repository.CommonCodeRepository;
 import com.beautymeongdang.global.exception.handler.BadRequestException;
@@ -26,24 +25,16 @@ import com.beautymeongdang.global.exception.handler.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Recover;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientRequestException;
 
-import java.net.SocketTimeoutException;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeoutException;
 
 @Service
 @RequiredArgsConstructor
@@ -58,12 +49,9 @@ public class PaymentServiceImpl implements PaymentService {
     private final SelectedQuoteRepository selectedQuoteRepository;
     private final ShopRepository shopRepository;
     private final QuoteRepository quoteRepository;
-    private final CustomerRepository customerRepository;
-    private final WebClient webClient;
     private final CommonCodeRepository commonCodeRepository;
     private final NotificationService notificationService;
-
-    private static final String TOSS_PAYMENTS_CONFIRM_URL = "https://api.tosspayments.com/v1/payments/confirm";
+    private final PaymentApiCallerService paymentApiCallerService;
 
     public static final String PAYMENT_GROUP = "300"; // 결제 상태 그룹
     public static final String PAYMENT_COMPLETED = "020";    // 결제 완료
@@ -76,150 +64,122 @@ public class PaymentServiceImpl implements PaymentService {
 
     // 결제 승인 요청 및 예약 완료
     @Override
-    @Retryable(
-            value = { WebClientRequestException.class,
-                    SocketTimeoutException.class,
-                    TimeoutException.class},
-            maxAttempts = 3,
-            backoff = @Backoff(
-                    delay = 1000,
-                    multiplier = 2.0,
-                    maxDelay = 10000
-            )
-    )
     @Transactional
     public PaymentResponseDto confirmPayment(PaymentRequestDto request) {
 
-        try {
-            Quote quote = quoteRepository.findQuoteForPaymentById(request.getQuoteId())
-                    .orElseThrow(() -> NotFoundException.entityNotFound("견적 데이터"));
+        Quote quote = quoteRepository.findQuoteForPaymentById(request.getQuoteId())
+                .orElseThrow(() -> NotFoundException.entityNotFound("견적 데이터"));
 
-            Customer customer = quote.getDogId().getCustomerId();
-            if (customer == null || !customer.getCustomerId().equals(request.getCustomerId())) {
-                throw NotFoundException.entityNotFound("고객 데이터");
-            }
-
-            if (selectedQuoteRepository.findByQuoteId(quote) != null) {
-                throw BadRequestException.invalidRequest("해당 견적서는 이미 예약되었습니다.");
-            }
-
-            SelectedQuote selectedQuotePay = selectedQuoteRepository.findByQuoteId(quote);
-            if (selectedQuotePay != null && paymentRepository.existsBySelectedQuoteId(selectedQuotePay)) {
-                throw BadRequestException.invalidRequest("이미 결제된 견적서입니다.");
-            }
-
-            Long groomerId = quote.getGroomerId().getGroomerId();
-            String shopName = shopRepository.findByGroomerId(groomerId)
-                    .orElseThrow(() -> NotFoundException.entityNotFound("샵 정보"))
-                    .getShopName();
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setBasicAuth(secretKey, "");
-
-            Map<String, Object> body = Map.of(
-                    "paymentKey", request.getPaymentKey(),
-                    "orderId", request.getOrderId(),
-                    "amount", request.getAmount()
-            );
-            // API 호출
-            Map<String, Object> response = webClient.post()
-                    .uri(TOSS_PAYMENTS_CONFIRM_URL)
-                    .headers(httpHeaders -> httpHeaders.addAll(headers))
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                    .block();
-
-            if (response == null || response.get("approvedAt") == null) {
-                throw InternalServerException.error("결제 승인 응답이 유효하지 않음");
-            }
-
-            OffsetDateTime approvedAtOffset = OffsetDateTime.parse(response.get("approvedAt").toString());
-            LocalDateTime approvedAt = approvedAtOffset.toLocalDateTime();
-            String method = response.get("method").toString();
-
-            SelectedQuote selectedQuote = SelectedQuote.builder()
-                    .quoteId(quote)
-                    .customerId(customer)
-                    .status(RESERVATION_COMPLETED)
-                    .build();
-
-            selectedQuote = selectedQuoteRepository.save(selectedQuote);
-
-            // 견적서 상태 변경
-            quote = Quote.builder()
-                    .quoteId(quote.getQuoteId())
-                    .requestId(quote.getRequestId())
-                    .groomerId(quote.getGroomerId())
-                    .dogId(quote.getDogId())
-                    .content(quote.getContent())
-                    .cost(quote.getCost())
-                    .beautyDate(quote.getBeautyDate())
-                    .status(QUOTE_ACCEPT)
-                    .build();
-
-            quoteRepository.save(quote);
-
-            // 견적서 요청 상태 변경 ( 전체 공고만 )
-            QuoteRequest requestEntity = quote.getRequestId();
-
-            if (QUOTE_ALL_REQUEST.equals(requestEntity.getRequestType())) {
-                requestEntity = QuoteRequest.builder()
-                        .requestId(requestEntity.getRequestId())
-                        .dogId(requestEntity.getDogId())
-                        .content(requestEntity.getContent())
-                        .beautyDate(requestEntity.getBeautyDate())
-                        .requestType(requestEntity.getRequestType())
-                        .status(QUOTE_REQUEST_DEADLINE)
-                        .build();
-
-                quoteRequestRepository.save(requestEntity);
-            }
-
-
-            Payment payment = Payment.builder()
-                    .paymentKey(request.getPaymentKey())
-                    .orderId(request.getOrderId())
-                    .amount(request.getAmount())
-                    .method(method)
-                    .status(PAYMENT_COMPLETED)
-                    .approvedAt(approvedAt)
-                    .paymentTitle(shopName)
-                    .selectedQuoteId(selectedQuote)
-                    .build();
-
-            paymentRepository.save(payment);
-
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
-            String formattedBeautyDate = quote.getBeautyDate().format(formatter);
-
-            // 알림 메시지 생성
-            CreateReserveNotification reserve = CreateReserveNotification(request, quote, formattedBeautyDate, customer);
-
-            //알림 메시지 저장
-            saveNotification(customer, NotificationType.RESERVATION, reserve.notificationMessageForCustomer(), quote, reserve.notificationMessageForGroomer());
-
-            String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
-                    .map(CommonCode::getCommonName)
-                    .orElse("알 수 없는 상태");
-
-            return PaymentResponseDto.builder()
-                    .paymentKey(request.getPaymentKey())
-                    .orderId(request.getOrderId())
-                    .status(statusName)
-                    .method(method)
-                    .approvedAt(approvedAtOffset)
-                    .amount(request.getAmount())
-                    .selectedQuoteId(selectedQuote.getSelectedQuoteId())
-                    .message("결제 승인 성공")
-                    .paymentTitle(shopName)
-                    .build();
-
-        } catch (Exception e) {
-            log.error("결제 승인 중 오류 발생: {}", e.getMessage(), e);
-            throw InternalServerException.error("결제 승인 중 오류가 발생했습니다: " + e.getMessage());
+        Customer customer = quote.getDogId().getCustomerId();
+        if (customer == null || !customer.getCustomerId().equals(request.getCustomerId())) {
+            throw NotFoundException.entityNotFound("고객 데이터");
         }
+
+        if (selectedQuoteRepository.findByQuoteId(quote) != null) {
+            throw BadRequestException.invalidRequest("해당 견적서는 이미 예약되었습니다.");
+        }
+
+        SelectedQuote selectedQuotePay = selectedQuoteRepository.findByQuoteId(quote);
+        if (selectedQuotePay != null && paymentRepository.existsBySelectedQuoteId(selectedQuotePay)) {
+            throw BadRequestException.invalidRequest("이미 결제된 견적서입니다.");
+        }
+
+        Long groomerId = quote.getGroomerId().getGroomerId();
+        String shopName = shopRepository.findByGroomerId(groomerId)
+                .orElseThrow(() -> NotFoundException.entityNotFound("샵 정보"))
+                .getShopName();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBasicAuth(secretKey, "");
+
+        // API 호출
+        Map<String, Object> response = paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(request, headers);
+
+        if (response == null || response.get("approvedAt") == null) {
+            throw InternalServerException.error("결제 승인 응답이 유효하지 않음");
+        }
+
+        OffsetDateTime approvedAtOffset = OffsetDateTime.parse(response.get("approvedAt").toString());
+        LocalDateTime approvedAt = approvedAtOffset.toLocalDateTime();
+        String method = response.get("method").toString();
+
+        SelectedQuote selectedQuote = SelectedQuote.builder()
+                .quoteId(quote)
+                .customerId(customer)
+                .status(RESERVATION_COMPLETED)
+                .build();
+
+        selectedQuote = selectedQuoteRepository.save(selectedQuote);
+
+        // 견적서 상태 변경
+        quote = Quote.builder()
+                .quoteId(quote.getQuoteId())
+                .requestId(quote.getRequestId())
+                .groomerId(quote.getGroomerId())
+                .dogId(quote.getDogId())
+                .content(quote.getContent())
+                .cost(quote.getCost())
+                .beautyDate(quote.getBeautyDate())
+                .status(QUOTE_ACCEPT)
+                .build();
+
+        quoteRepository.save(quote);
+
+        // 견적서 요청 상태 변경 ( 전체 공고만 )
+        QuoteRequest requestEntity = quote.getRequestId();
+
+        if (QUOTE_ALL_REQUEST.equals(requestEntity.getRequestType())) {
+            requestEntity = QuoteRequest.builder()
+                    .requestId(requestEntity.getRequestId())
+                    .dogId(requestEntity.getDogId())
+                    .content(requestEntity.getContent())
+                    .beautyDate(requestEntity.getBeautyDate())
+                    .requestType(requestEntity.getRequestType())
+                    .status(QUOTE_REQUEST_DEADLINE)
+                    .build();
+
+            quoteRequestRepository.save(requestEntity);
+        }
+
+
+        Payment payment = Payment.builder()
+                .paymentKey(request.getPaymentKey())
+                .orderId(request.getOrderId())
+                .amount(request.getAmount())
+                .method(method)
+                .status(PAYMENT_COMPLETED)
+                .approvedAt(approvedAt)
+                .paymentTitle(shopName)
+                .selectedQuoteId(selectedQuote)
+                .build();
+
+        paymentRepository.save(payment);
+
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+        String formattedBeautyDate = quote.getBeautyDate().format(formatter);
+
+        // 알림 메시지 생성
+        CreateReserveNotification reserve = CreateReserveNotification(request, quote, formattedBeautyDate, customer);
+
+        //알림 메시지 저장
+        saveNotification(customer, NotificationType.RESERVATION, reserve.notificationMessageForCustomer(), quote, reserve.notificationMessageForGroomer());
+
+        String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
+                .map(CommonCode::getCommonName)
+                .orElse("알 수 없는 상태");
+
+        return PaymentResponseDto.builder()
+                .paymentKey(request.getPaymentKey())
+                .orderId(request.getOrderId())
+                .status(statusName)
+                .method(method)
+                .approvedAt(approvedAtOffset)
+                .amount(request.getAmount())
+                .selectedQuoteId(selectedQuote.getSelectedQuoteId())
+                .message("결제 승인 성공")
+                .paymentTitle(shopName)
+                .build();
     }
 
     private void saveNotification(Customer customer, NotificationType reservation, String reserve, Quote quote, String reserve1) {
@@ -263,23 +223,6 @@ public class PaymentServiceImpl implements PaymentService {
     private record CreateReserveNotification(String notificationMessageForCustomer, String notificationMessageForGroomer) {
     }
 
-    @Recover
-    public PaymentResponseDto recoverConfirmPayment(WebClientRequestException e, PaymentRequestDto request) {
-        log.error("결제 승인 최종 실패 (WebClientRequestException): PaymentKey={}, 오류={}", request.getPaymentKey(), e.getMessage());
-        throw InternalServerException.error("결제 승인에 최종 실패했습니다.");
-    }
-
-    @Recover
-    public PaymentResponseDto recoverConfirmPayment(SocketTimeoutException e, PaymentRequestDto request) {
-        log.error("결제 승인 최종 실패 (SocketTimeoutException): PaymentKey={}, 오류={}", request.getPaymentKey(), e.getMessage());
-        throw InternalServerException.error("결제 승인에 최종 실패했습니다.");
-    }
-
-    @Recover
-    public PaymentResponseDto recoverConfirmPayment(TimeoutException e, PaymentRequestDto request) {
-        log.error("결제 승인 최종 실패 (TimeoutException): PaymentKey={}, 오류={}", request.getPaymentKey(), e.getMessage());
-        throw InternalServerException.error("결제 승인에 최종 실패했습니다.");
-    }
 
     // 결제 취소 및 예약 취소
     @Override
@@ -296,13 +239,8 @@ public class PaymentServiceImpl implements PaymentService {
         String url = "https://api.tosspayments.com/v1/payments/" + request.getPaymentKey() + "/cancel";
 
         try {
-            Map<String, Object> response = webClient.post()
-                    .uri(url)
-                    .headers(httpHeaders -> httpHeaders.addAll(headers))
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                    .block();
+            // API 호출
+            Map<String, Object> response = paymentApiCallerService.cancelTossPaymentWithRetryAndCircuitBreaker(url, headers, body);
 
             if (response != null) {
 
@@ -362,7 +300,6 @@ public class PaymentServiceImpl implements PaymentService {
             throw InternalServerException.error(e.getMessage());
         }
     }
-
 
     // 결제 내역 조회
     @Override
