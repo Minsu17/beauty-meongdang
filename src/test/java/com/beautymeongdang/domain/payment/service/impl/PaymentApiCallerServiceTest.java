@@ -11,12 +11,7 @@ import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClient.RequestBodySpec;
-import org.springframework.web.reactive.function.client.WebClient.RequestBodyUriSpec;
-import org.springframework.web.reactive.function.client.WebClient.RequestHeadersSpec;
-import org.springframework.web.reactive.function.client.WebClient.ResponseSpec;
 import reactor.core.publisher.Mono;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,23 +31,16 @@ class PaymentApiCallerServiceTest {
     @MockBean
     private WebClient webClient;
 
-    private RequestBodyUriSpec requestBodyUriSpec;
-    private RequestBodySpec requestBodySpec;
-    private RequestHeadersSpec requestHeadersSpec;
-    private ResponseSpec responseSpec;
-
     private PaymentRequestDto testPaymentRequest;
-    private HttpHeaders testHeaders;
 
     @BeforeEach
     void setUp() {
-        this.requestBodyUriSpec = Mockito.mock(RequestBodyUriSpec.class);
-        this.requestBodySpec = Mockito.mock(RequestBodySpec.class);
-        this.requestHeadersSpec = Mockito.mock(RequestHeadersSpec.class);
-        this.responseSpec = Mockito.mock(ResponseSpec.class);
+        WebClient.RequestBodyUriSpec requestBodyUriSpec = Mockito.mock(WebClient.RequestBodyUriSpec.class);
+        WebClient.RequestBodySpec requestBodySpec = Mockito.mock(WebClient.RequestBodySpec.class);
+        WebClient.RequestHeadersSpec requestHeadersSpec = Mockito.mock(WebClient.RequestHeadersSpec.class);
+        WebClient.ResponseSpec responseSpec = Mockito.mock(WebClient.ResponseSpec.class);
 
-        CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("tossPaymentService");
-        circuitBreaker.reset();
+        circuitBreakerRegistry.circuitBreaker("tossPaymentService").reset();
 
         testPaymentRequest = PaymentRequestDto.builder()
                 .paymentKey("test_payment_key")
@@ -61,9 +49,6 @@ class PaymentApiCallerServiceTest {
                 .quoteId(1L)
                 .customerId(1L)
                 .build();
-
-        testHeaders = new HttpHeaders();
-        testHeaders.set("Authorization", "Basic dGVzdF9za186");
 
         when(webClient.post()).thenReturn(requestBodyUriSpec);
         when(requestBodyUriSpec.uri(anyString())).thenReturn(requestBodySpec);
@@ -86,7 +71,7 @@ class PaymentApiCallerServiceTest {
         for (int i = 1; i <= 10; i++) {
             System.out.println("\n=== " + i + "번째 호출 시도 ===");
             assertThrows(InternalServerException.class, () ->
-                    paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(testPaymentRequest, testHeaders)
+                    paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(testPaymentRequest)
             );
             System.out.println("실패 횟수: " + circuitBreaker.getMetrics().getNumberOfFailedCalls());
             System.out.println("서킷 브레이커 상태: " + circuitBreaker.getState());
@@ -104,11 +89,11 @@ class PaymentApiCallerServiceTest {
         System.out.println("대기 후 서킷 브레이커 상태: " + circuitBreaker.getState());
 
         Exception exception = assertThrows(Exception.class, () ->
-                paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(testPaymentRequest, testHeaders)
+                paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(testPaymentRequest)
         );
 
         // fallbackMethod가 CallNotPermittedException을 잡고 InternalServerException을 던지므로,
-        // InternalServerException이 발생했는지 확인해야 함
+        // InternalServerException이 발생했는지 확인
         assertTrue(exception instanceof InternalServerException,
                 "11번째 호출은 InternalServerException (Fallback)을 발생시켜야 합니다.");
         System.out.println("✅ InternalServerException이 발생");
