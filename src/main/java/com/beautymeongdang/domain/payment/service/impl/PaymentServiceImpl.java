@@ -1,11 +1,9 @@
 package com.beautymeongdang.domain.payment.service.impl;
 
-import com.beautymeongdang.domain.notification.enums.NotificationType;
 import com.beautymeongdang.domain.notification.service.NotificationService;
-import com.beautymeongdang.domain.payment.dto.PaymentCancelRequestDto;
-import com.beautymeongdang.domain.payment.dto.PaymentCancelResponseDto;
-import com.beautymeongdang.domain.payment.dto.PaymentRequestDto;
-import com.beautymeongdang.domain.payment.dto.PaymentResponseDto;
+import com.beautymeongdang.domain.notification.service.ReservationCancelNotificationEvent;
+import com.beautymeongdang.domain.notification.service.ReservationNotificationEvent;
+import com.beautymeongdang.domain.payment.dto.*;
 import com.beautymeongdang.domain.payment.entity.Payment;
 import com.beautymeongdang.domain.payment.repository.PaymentRepository;
 import com.beautymeongdang.domain.payment.service.PaymentService;
@@ -24,9 +22,7 @@ import com.beautymeongdang.global.exception.handler.InternalServerException;
 import com.beautymeongdang.global.exception.handler.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,8 +38,7 @@ import java.util.Map;
 public class PaymentServiceImpl implements PaymentService {
 
     private final QuoteRequestRepository quoteRequestRepository;
-    @Value("${toss.payments.secret.key}")
-    private String secretKey;
+
 
     private final PaymentRepository paymentRepository;
     private final SelectedQuoteRepository selectedQuoteRepository;
@@ -52,6 +47,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final CommonCodeRepository commonCodeRepository;
     private final NotificationService notificationService;
     private final PaymentApiCallerService paymentApiCallerService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public static final String PAYMENT_GROUP = "300"; // 결제 상태 그룹
     public static final String PAYMENT_COMPLETED = "020";    // 결제 완료
@@ -89,12 +85,9 @@ public class PaymentServiceImpl implements PaymentService {
                 .orElseThrow(() -> NotFoundException.entityNotFound("샵 정보"))
                 .getShopName();
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBasicAuth(secretKey, "");
 
         // API 호출
-        Map<String, Object> response = paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(request, headers);
+        Map<String, Object> response = paymentApiCallerService.confirmTossPaymentWithRetryAndCircuitBreaker(request);
 
         if (response == null || response.get("approvedAt") == null) {
             throw InternalServerException.error("결제 승인 응답이 유효하지 않음");
@@ -159,11 +152,9 @@ public class PaymentServiceImpl implements PaymentService {
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
         String formattedBeautyDate = quote.getBeautyDate().format(formatter);
 
-        // 알림 메시지 생성
-        CreateReserveNotification reserve = CreateReserveNotification(request, quote, formattedBeautyDate, customer);
-
-        //알림 메시지 저장
-        saveNotification(customer, NotificationType.RESERVATION, reserve.notificationMessageForCustomer(), quote, reserve.notificationMessageForGroomer());
+        // 결제 승인 및 예약 알림
+        ReservationNotificationDto notificationDto = ReservationNotificationDto.of(quote, customer, request.getAmount().longValue(), formattedBeautyDate);
+        eventPublisher.publishEvent(new ReservationNotificationEvent(this, notificationDto));
 
         String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
                 .map(CommonCode::getCommonName)
@@ -182,122 +173,49 @@ public class PaymentServiceImpl implements PaymentService {
                 .build();
     }
 
-    private void saveNotification(Customer customer, NotificationType reservation, String reserve, Quote quote, String reserve1) {
-        // 고객 알림 저장 (예약 알림)
-        notificationService.saveNotification(
-                customer.getUserId().getUserId(),
-                "customer",
-                reservation.getDescription(),
-                reserve
-        );
-
-        // 미용사 알림 저장 (예약 알림)
-        notificationService.saveNotification(
-                quote.getGroomerId().getUserId().getUserId(),
-                "groomer",
-                reservation.getDescription(),
-                reserve1
-        );
-    }
-
-    private static CreateReserveNotification CreateReserveNotification(PaymentRequestDto request, Quote quote, String formattedBeautyDate, Customer customer) {
-        String notificationMessageForCustomer = String.format(
-                "예약이 완료되었습니다. 미용사: %s, 강아지: %s, 비용: %d원, 미용 날짜: %s",
-                quote.getGroomerId().getUserId().getNickname(),
-                quote.getDogId().getDogName(),
-                request.getAmount(),
-                formattedBeautyDate
-        );
-
-        String notificationMessageForGroomer = String.format(
-                "예약이 완료되었습니다. 고객: %s, 강아지: %s, 비용: %d원, 미용 날짜: %s",
-                customer.getUserId().getUserName(),
-                quote.getDogId().getDogName(),
-                request.getAmount(),
-                formattedBeautyDate
-        );
-        CreateReserveNotification reserve = new CreateReserveNotification(notificationMessageForCustomer, notificationMessageForGroomer);
-        return reserve;
-    }
-
-    private record CreateReserveNotification(String notificationMessageForCustomer, String notificationMessageForGroomer) {
-    }
-
 
     // 결제 취소 및 예약 취소
     @Override
     @Transactional
     public PaymentCancelResponseDto cancelPayment(PaymentCancelRequestDto request) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBasicAuth(secretKey, "");
 
-        Map<String, Object> body = Map.of(
-                "cancelReason", request.getCancelReason()
-        );
+        // API 호출
+        Map<String, Object> response = paymentApiCallerService.cancelTossPaymentWithRetryAndCircuitBreaker(request);
 
-        String url = "https://api.tosspayments.com/v1/payments/" + request.getPaymentKey() + "/cancel";
+        if (response != null) {
 
-        try {
-            // API 호출
-            Map<String, Object> response = paymentApiCallerService.cancelTossPaymentWithRetryAndCircuitBreaker(url, headers, body);
+            Payment payment = paymentRepository.findByPaymentKey(request.getPaymentKey())
+                    .orElseThrow(() -> NotFoundException.entityNotFound("결제 정보"));
 
-            if (response != null) {
+            payment = payment.toBuilder()
+                    .status(PAYMENT_CANCELLED)
+                    .cancelReason(request.getCancelReason())
+                    .build();
 
-                Payment payment = paymentRepository.findByPaymentKey(request.getPaymentKey())
-                        .orElseThrow(() -> NotFoundException.entityNotFound("결제 정보"));
+            paymentRepository.save(payment);
 
-                payment = payment.toBuilder()
-                        .status(PAYMENT_CANCELLED)
-                        .cancelReason(request.getCancelReason())
-                        .build();
+            SelectedQuote selectedQuote = payment.getSelectedQuoteId();
+            selectedQuote = selectedQuote.updateStatus(RESERVATION_CANCELLED);
+            selectedQuoteRepository.save(selectedQuote);
 
-                paymentRepository.save(payment);
+            // 결제 및 예약 취소 알림
+            ReservationCancelNotificationDto cancelDto = ReservationCancelNotificationDto.of(selectedQuote, request.getCancelReason());
+            eventPublisher.publishEvent(new ReservationCancelNotificationEvent(this, cancelDto));
 
-                SelectedQuote selectedQuote = payment.getSelectedQuoteId();
-                selectedQuote = selectedQuote.updateStatus(RESERVATION_CANCELLED);
-                selectedQuoteRepository.save(selectedQuote);
+            String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
+                    .map(CommonCode::getCommonName)
+                    .orElse("알 수 없는 상태");
 
-                // 예약 취소 알림 메시지 생성
-                String notificationMessageForCustomer = String.format(
-                        "예약이 취소되었습니다. 미용사: %s, 강아지: %s, 취소 비용: %d원, 취소 사유: %s",
-                        selectedQuote.getQuoteId().getGroomerId().getUserId().getNickname(),
-                        selectedQuote.getQuoteId().getDogId().getDogName(),
-                        selectedQuote.getQuoteId().getCost(),
-                        request.getCancelReason()
-
-                );
-
-                String notificationMessageForGroomer = String.format(
-                        "예약이 취소되었습니다. 고객: %s, 강아지: %s, 취소 비용: %d원, 취소 사유: %s",
-                        selectedQuote.getCustomerId().getUserId().getUserName(),
-                        selectedQuote.getQuoteId().getDogId().getDogName(),
-                        selectedQuote.getQuoteId().getCost(),
-                        request.getCancelReason()
-                );
-
-                // 고객 알림 저장 (예약 취소 알림)
-                saveNotification(selectedQuote.getCustomerId(), NotificationType.CANCELLATION, notificationMessageForCustomer, selectedQuote.getQuoteId(), notificationMessageForGroomer);
-
-                String statusName = commonCodeRepository.findByCodeAndGroupCode(payment.getStatus(), PAYMENT_GROUP)
-                        .map(CommonCode::getCommonName)
-                        .orElse("알 수 없는 상태");
-
-                return PaymentCancelResponseDto.builder()
-                        .paymentKey(request.getPaymentKey())
-                        .status(statusName)
-                        .method(payment.getMethod())
-                        .cancelReason(request.getCancelReason())
-                        .selectedQuoteId(payment.getSelectedQuoteId().getSelectedQuoteId())
-                        .message("결제 취소 성공")
-                        .build();
-            } else {
-                throw InternalServerException.error("결제 취소 응답이 유효하지 않음");
-            }
-        } catch (NotFoundException | BadRequestException e) {
-            throw e;
-        } catch (Exception e) {
-            throw InternalServerException.error(e.getMessage());
+            return PaymentCancelResponseDto.builder()
+                    .paymentKey(request.getPaymentKey())
+                    .status(statusName)
+                    .method(payment.getMethod())
+                    .cancelReason(request.getCancelReason())
+                    .selectedQuoteId(payment.getSelectedQuoteId().getSelectedQuoteId())
+                    .message("결제 취소 성공")
+                    .build();
+        } else {
+            throw InternalServerException.error("결제 취소 응답이 유효하지 않음");
         }
     }
 
