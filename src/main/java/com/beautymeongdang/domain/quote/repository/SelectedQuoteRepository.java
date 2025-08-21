@@ -54,7 +54,8 @@ public interface SelectedQuoteRepository extends JpaRepository<SelectedQuote, Lo
             "d.dogWeight, d.dogAge, " +
             "CAST(d.dogGender AS string), " +
             "d.neutering, d.experience, d.significant, " +
-            "q.quoteId, q.beautyDate, qr.content, q.content, q.cost, p.paymentKey, s.latitude, s.longitude) " +
+            "q.quoteId, q.beautyDate, qr.content, q.content, q.cost, p.paymentKey, s.latitude, s.longitude, " +
+            "qr.requestId) " +
             "FROM SelectedQuote sq " +
             "JOIN sq.quoteId q " +
             "JOIN q.requestId qr " +
@@ -66,9 +67,6 @@ public interface SelectedQuoteRepository extends JpaRepository<SelectedQuote, Lo
             "JOIN CommonCode cc ON cc.id.codeId = d.dogBreed AND cc.id.groupId = '400'" +
             "WHERE sq.selectedQuoteId = :selectedQuoteId AND sq.isDeleted = false")
     GetSelectedQuoteDetailResponseDto findQuoteDetailById(@Param("selectedQuoteId") Long selectedQuoteId);
-
-    @Query("SELECT q.requestId.requestId FROM SelectedQuote sq JOIN sq.quoteId q WHERE q.quoteId = :quoteId")
-    Long findRequestIdByQuoteId(@Param("quoteId") Long quoteId);
 
 
     // 미용사 메인 페이지 - 오늘의 예약 건수 조회

@@ -35,6 +35,7 @@ public class GetSelectedQuoteDetailResponseDto {
     private String paymentKey;
     private BigDecimal latitude;
     private BigDecimal longitude;
+    private Long requestId;
 
     @Builder
     public GetSelectedQuoteDetailResponseDto(
@@ -60,7 +61,8 @@ public class GetSelectedQuoteDetailResponseDto {
             Integer amount,
             String paymentKey,
             BigDecimal latitude,
-            BigDecimal longitude
+            BigDecimal longitude,
+            Long requestId
     ) {
         this.customerName = customerName;
         this.groomerName = groomerName;
@@ -85,5 +87,6 @@ public class GetSelectedQuoteDetailResponseDto {
         this.paymentKey = paymentKey;
         this.latitude = latitude;
         this.longitude = longitude;
+        this.requestId = requestId;
     }
 }
